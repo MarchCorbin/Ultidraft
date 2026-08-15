@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ultidraft"
+version = "0.1.0"
+description = "Listen to a manuscript draft, mark notes on the current sentence, and export them for revision."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "PySide6>=6.6.0",
+    "edge-tts>=7.0.0",
+    "winrt-runtime>=3.0.0",
+    "winrt-Windows.Foundation>=3.0.0",
+    "winrt-Windows.Globalization>=3.0.0",
+    "winrt-Windows.Media.SpeechRecognition>=3.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+build = ["pyinstaller>=6.0"]
+
+[tool.setuptools.package-data]
+ultidraft = ["assets/*"]
+
+[project.scripts]
+ultidraft = "ultidraft.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
