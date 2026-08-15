@@ -54,3 +54,36 @@ def test_export_markdown_contains_quote_and_body():
 def test_next_note_id_increments():
     sidecar = _sample_sidecar()
     assert sidecar.next_note_id() == "N002"
+
+
+def test_replace_note_keeps_id_and_updates_body():
+    sidecar = _sample_sidecar()
+    original = sidecar.note_by_id("N001")
+    assert original is not None
+    updated = Note(
+        id=original.id,
+        created=original.created,
+        chapter_title=original.chapter_title,
+        anchor_quote=original.anchor_quote,
+        context_before=original.context_before,
+        context_after=original.context_after,
+        sentence_index=original.sentence_index,
+        body="Give Lot one more line, and fix the typo.",
+    )
+    assert sidecar.replace_note(updated) is True
+    assert sidecar.note_by_id("N001") is not None
+    assert sidecar.note_by_id("N001").body == "Give Lot one more line, and fix the typo."
+    assert sidecar.note_by_id("N001").created == original.created
+    assert sidecar.replace_note(Note(
+        id="N999",
+        created=original.created,
+        chapter_title=original.chapter_title,
+        anchor_quote=original.anchor_quote,
+        context_before="",
+        context_after="",
+        sentence_index=0,
+        body="missing",
+    )) is False
+    markdown = export_notes_markdown(sidecar, "SODOM.md")
+    assert "Give Lot one more line, and fix the typo." in markdown
+    assert "This beat is rushed." not in markdown

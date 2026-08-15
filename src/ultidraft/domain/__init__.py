@@ -6,7 +6,9 @@ from ultidraft.domain.manuscript import (
     Sentence,
     SpeakSpan,
     load_manuscript,
+    locate_in_markdown,
     parse_markdown,
+    sentence_index_at_offset,
     split_sentences,
 )
 from ultidraft.domain.notes import Note, Sidecar, load_sidecar, save_sidecar, sidecar_path
@@ -23,7 +25,9 @@ __all__ = [
     "export_notes_markdown",
     "load_manuscript",
     "load_sidecar",
+    "locate_in_markdown",
     "parse_markdown",
+    "sentence_index_at_offset",
     "save_sidecar",
     "sidecar_path",
     "split_sentences",

@@ -88,6 +88,19 @@ QLineEdit {
     padding: 6px 8px;
     border-radius: 4px;
 }
+QPlainTextEdit#manuscriptEditor {
+    background: #2b2b2b;
+    color: #e8e4d9;
+    border: none;
+    font-family: "Cascadia Mono", Consolas, monospace;
+    font-size: 14px;
+    selection-background-color: #3d4f66;
+}
+QLabel#editBanner {
+    background: #3d4f66;
+    color: #ffffff;
+    padding: 6px 12px;
+}
 QComboBox QAbstractItemView {
     background: #2b2b2b;
     color: #e0e0e0;

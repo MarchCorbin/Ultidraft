@@ -63,8 +63,11 @@ class SpeakSpan:
     sentences: tuple[Sentence, ...]
 
 
-SPAN_MAX_CHARS = 420
-SPAN_MAX_SENTENCES = 6
+# Keep a few minutes of prose in one neural-voice request. The service accepts
+# 4096-byte chunks, so staying comfortably below that avoids both a service-side
+# split and an application-side player restart every handful of sentences.
+SPAN_MAX_BYTES = 2400
+SPAN_MAX_SENTENCES = 24
 
 
 @dataclass(frozen=True)
@@ -108,24 +111,34 @@ class Manuscript:
         return 0
 
     def span_from(self, index: int) -> SpeakSpan | None:
-        """Pack nearby body sentences into one spoken clip so playback stays fluid."""
+        """Pack consecutive chapter text into one long, naturally paced clip."""
         first = self.sentence_at(index)
         if first is None:
             return None
-        if first.kind != "body":
-            return SpeakSpan(first.index, first.index, first.text, (first,))
         parts = [first]
-        chars = len(first.text)
+        spoken = first.text
+        byte_count = len(spoken.encode("utf-8"))
         for sentence in self.sentences[index + 1 :]:
-            if sentence.chapter_id != first.chapter_id or sentence.kind != "body":
+            if sentence.chapter_id != first.chapter_id:
                 break
-            extra = 1 + len(sentence.text)
-            if len(parts) >= SPAN_MAX_SENTENCES or chars + extra > SPAN_MAX_CHARS:
+            previous = parts[-1]
+            separator = (
+                "\n\n"
+                if sentence.paragraph_index != previous.paragraph_index
+                or sentence.kind != previous.kind
+                else " "
+            )
+            extra = separator + sentence.text
+            extra_bytes = len(extra.encode("utf-8"))
+            if (
+                len(parts) >= SPAN_MAX_SENTENCES
+                or byte_count + extra_bytes > SPAN_MAX_BYTES
+            ):
                 break
             parts.append(sentence)
-            chars += extra
-        text = " ".join(part.text for part in parts)
-        return SpeakSpan(parts[0].index, parts[-1].index, text, tuple(parts))
+            spoken += extra
+            byte_count += extra_bytes
+        return SpeakSpan(parts[0].index, parts[-1].index, spoken, tuple(parts))
 
     def nearby(self, index: int, radius: int = 5) -> tuple[Sentence, ...]:
         start = max(0, index - radius)
@@ -142,6 +155,73 @@ class Manuscript:
             texts.append(span.text)
             cursor = span.end_index + 1
         return texts
+
+
+_MARKUP = set("#*_`")
+
+
+def locate_in_markdown(raw: str, needle: str, start: int = 0) -> tuple[int, int] | None:
+    """Find cleaned prose inside markdown, ignoring emphasis marks and extra space."""
+    needle = re.sub(r"\s+", " ", needle).strip()
+    if not needle:
+        return None
+    first = needle[0]
+    for origin in range(max(0, start), len(raw)):
+        end = _match_cleaned(raw, origin, needle)
+        if end is None:
+            continue
+        begin = origin
+        while begin < end and raw[begin] != first:
+            begin += 1
+        return begin, end
+    return None
+
+
+def sentence_index_at_offset(raw: str, sentences: tuple[Sentence, ...] | list[Sentence], offset: int) -> int:
+    """Return the sentence whose source span contains, or most recently passed, offset."""
+    after = 0
+    best = 0
+    for sentence in sentences:
+        span = locate_in_markdown(raw, sentence.text, after)
+        if span is None:
+            continue
+        start, end = span
+        after = end
+        if start <= offset <= end:
+            return sentence.index
+        if start <= offset:
+            best = sentence.index
+    return best
+
+
+def _match_cleaned(raw: str, origin: int, needle: str) -> int | None:
+    ri = origin
+    ni = 0
+    n = len(raw)
+    while ni < len(needle):
+        if ri >= n:
+            return None
+        want = needle[ni]
+        got = raw[ri]
+        if want.isspace():
+            if not (got.isspace() or got in _MARKUP):
+                return None
+            while ri < n and (raw[ri].isspace() or raw[ri] in _MARKUP):
+                ri += 1
+            ni += 1
+            continue
+        if got in _MARKUP and got != want:
+            ri += 1
+            continue
+        if got.isspace():
+            ri += 1
+            continue
+        if got == want:
+            ri += 1
+            ni += 1
+            continue
+        return None
+    return ri
 
 
 def load_manuscript(path: Path) -> Manuscript:

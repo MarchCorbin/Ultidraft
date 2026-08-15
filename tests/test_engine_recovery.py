@@ -149,6 +149,31 @@ def test_half_written_cache_files_are_not_playable(engine, tmp_path):
     assert engine._is_playable(whole)
 
 
+def test_prefetch_preloads_the_next_playable_clip(engine, tmp_path, monkeypatch):
+    cached = tmp_path / "next.mp3"
+    cached.write_bytes(b"\x00" * 4096)
+    monkeypatch.setattr(engine, "_cache_path", lambda _text, _voice: cached)
+
+    engine.prefetch_many(["the next reading span"])
+
+    assert engine._next_key == str(cached)
+    assert engine._prepared_path == cached
+    assert engine._prepared_player is not None
+
+
+def test_starting_a_preloaded_clip_promotes_its_player(engine, tmp_path):
+    cached = tmp_path / "next.mp3"
+    cached.write_bytes(b"\x00" * 4096)
+    engine._prepare_next(cached)
+    prepared = engine._prepared_player
+    engine._begin_utterance()
+
+    engine._start_clip(cached, engine._token)
+
+    assert engine._player is prepared
+    assert engine._prepared_player is None
+
+
 def test_synth_writes_through_a_staging_file(tmp_path, monkeypatch):
     """A cache path must never exist until the download is complete."""
     import asyncio

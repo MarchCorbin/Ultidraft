@@ -13,6 +13,7 @@ dependencies = [
     "edge-tts>=7.0.0",
     "winrt-runtime>=3.0.0",
     "winrt-Windows.Foundation>=3.0.0",
+    "winrt-Windows.Foundation.Collections>=3.0.0",
     "winrt-Windows.Globalization>=3.0.0",
     "winrt-Windows.Media.SpeechRecognition>=3.0.0",
 ]

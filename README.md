@@ -2,7 +2,7 @@
 
 Listen to a manuscript draft on your PC, pause on the sentence that snags, leave a note, and export those notes for Cursor.
 
-Ultidraft is a writer tool in the same family as Ultifile and Ultiplay. There is no account and no AI in the listen/note loop. Playback can use voices installed on this PC, or free Microsoft neural voices (the same family Edge uses) one sentence at a time.
+Ultidraft is a writer tool in the same family as Ultifile and Ultiplay. There is no account and no AI in the listen/note loop. Playback can use voices installed on this PC, or free Microsoft neural voices (the same family Edge uses) in continuous reading spans.
 
 I use it to revise a novel-in-progress by ear. The manuscript stays on disk; Ultidraft never uploads it.
 
@@ -14,12 +14,13 @@ Silent rereading skips clunky rhythm and repeated words. Existing listen-aloud a
 
 - Open a `.md` manuscript
 - Chapter list, sentence highlight, play / pause / skip
-- Add a typed note on the current sentence (`N`)
+- Flip to **Edit** at the current sentence (`E`), change the manuscript, then **Listen** (`Esc`) to keep going
+- Add a typed note on the current sentence (`N`); double-click a note to edit it
 - Save notes beside the book as `*.ultidraft.json`
 - Export `listening-notes.md` for Cursor (`Ctrl+E`)
 - Restore last file, sentence, speed, and voice on launch
 - Voice menu: neural narrators (internet) or the voices already on this PC
-- Speak a note into the microphone (Windows speech recognition, on this PC)
+- Speak a note into the microphone (Windows speech recognition; first use turns on Speech in Windows Settings)
 - Per-book pronunciation rules (Voice → Pronunciation rules), e.g. Sk4ms → scams
 
 Android is planned as a second client against the same sidecar schema, not a rewrite of the parser.
@@ -125,7 +126,10 @@ Open your draft with **File → Open** (`Ctrl+O`). Keyboard:
 |---|---|
 | Space | Play / pause |
 | Left / Right | Previous / next sentence |
+| E | Edit the manuscript at this sentence |
+| Esc | Return to listening (saves if you changed the text) |
 | N | Add note on this sentence |
+| Ctrl+S | Save manuscript (while editing) |
 | Ctrl+E | Export `listening-notes.md` |
 | Ctrl+O | Open manuscript |
 
@@ -135,10 +139,10 @@ Then in Cursor: open the manuscript and `listening-notes.md`, and ask it to appl
 
 This PC's built-in SAPI voices (David, Zira, Mark) are robotic. Ultidraft defaults to **Jenny**, a free Microsoft neural voice, and lets you switch from the Voice menu or the transport bar.
 
-- **Neural (internet):** Jenny, Aria, Guy, Christopher, and a few British/Australian narrators. One sentence is sent to Microsoft Edge TTS at a time. No account and no Cursor tokens.
+- **Neural (internet):** Jenny, Aria, Guy, Christopher, and a few British/Australian narrators. A few minutes of consecutive chapter text is narrated as one continuous span. No account and no Cursor tokens.
 - **This PC:** stays fully offline. Use these if you are off-network or do not want sentences leaving the machine.
 
-The first neural sentence can take a second to fetch. After that, Ultidraft caches audio and prefetches the next line.
+The first neural span can take a second to fetch. After that, Ultidraft caches audio and preloads the next span in a standby player, removing the media-loading pause between lines.
 
 ### Keeping the narrator moving
 
@@ -147,6 +151,7 @@ Listening for an hour means playback cannot stall, so `SpeechEngine` follows thr
 - **Cache files are written through a staging file and renamed into place.** A clip only appears at its real path once it is complete, so the player can never open a half-downloaded MP3. This was the actual cause of the narrator getting stuck mid-chapter.
 - **Every utterance carries a generation token, and all recovery paths funnel into one `_advance`.** End of clip, decode error, a stall, or a fetch timeout each ask to move on, and the token makes that happen exactly once. No skipped lines, no repeats.
 - **Each clip gets a fresh player.** Reusing one `QMediaPlayer` let stale events from the finished clip strand the next one.
+- **The next fresh player is loaded in standby.** When a span finishes, the ready player is promoted immediately instead of loading the next file in the audible gap.
 
 A failed fetch retries once, then skips that line. Three failures in a row means the network is gone, so it falls back to an offline voice instead of dropping the line silently.
 

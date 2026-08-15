@@ -1,23 +1,29 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import certifi
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 hiddenimports = collect_submodules("ultidraft")
-datas = [("src/ultidraft/assets/ultidraft.ico", "ultidraft/assets")]
+datas = [
+    ("src/ultidraft/assets/ultidraft.ico", "ultidraft/assets"),
+    (certifi.where(), "certifi"),
+]
 binaries = []
 
-for package in ("edge_tts", "aiohttp", "certifi"):
+for package in ("edge_tts", "aiohttp", "certifi", "winrt"):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
     datas += pkg_datas
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
 
+hiddenimports += collect_submodules("winrt")
 hiddenimports += [
     "PySide6.QtMultimedia",
     "PySide6.QtTextToSpeech",
     "winrt",
     "winrt.runtime",
     "winrt.windows.foundation",
+    "winrt.windows.foundation.collections",
     "winrt.windows.globalization",
     "winrt.windows.media.speechrecognition",
 ]
@@ -30,7 +36,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["scripts/pyi_rth_ssl.py"],
     excludes=[],
     noarchive=False,
 )

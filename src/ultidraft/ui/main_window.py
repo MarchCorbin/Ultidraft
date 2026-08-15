@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
@@ -12,14 +12,22 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from ultidraft.domain.export import default_export_path, write_notes_markdown
 from ultidraft.domain.lexicon import apply_lexicon
-from ultidraft.domain.manuscript import Manuscript, Sentence, load_manuscript
+from ultidraft.domain.manuscript import (
+    Manuscript,
+    Sentence,
+    load_manuscript,
+    locate_in_markdown,
+    sentence_index_at_offset,
+)
 from ultidraft.domain.notes import Note, Sidecar, load_sidecar, save_sidecar, utc_now_iso
 from ultidraft.persist.session import Session, load_session, save_session
 from ultidraft.tts.engine import SpeechEngine
@@ -43,6 +51,8 @@ class MainWindow(QMainWindow):
         self._sidecar: Sidecar | None = None
         self._index = 0
         self._playing = False
+        self._editing = False
+        self._resume_after_edit = False
         self._speed = 1.0
         self._voice_id = DEFAULT_VOICE_ID
         self._engine = SpeechEngine(self)
@@ -76,14 +86,30 @@ class MainWindow(QMainWindow):
 
         self._reader = ReaderView()
         self._reader.sentence_clicked.connect(self._jump_to)
+        self._editor = QPlainTextEdit()
+        self._editor.setObjectName("manuscriptEditor")
+        self._editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self._banner = QLabel("Editing the manuscript. Change the text, then click Listen.")
+        self._banner.setObjectName("editBanner")
+        self._banner.setVisible(False)
+        self._page = QStackedWidget()
+        self._page.addWidget(self._reader)
+        self._page.addWidget(self._editor)
+        reader_pane = QWidget()
+        reader_layout = QVBoxLayout(reader_pane)
+        reader_layout.setContentsMargins(0, 0, 0, 0)
+        reader_layout.setSpacing(0)
+        reader_layout.addWidget(self._banner)
+        reader_layout.addWidget(self._page, 1)
         self._notes = NotesPanel()
         self._notes.note_selected.connect(self._jump_to)
+        self._notes.note_edit_requested.connect(self._edit_note)
         self._transport = TransportBar()
         self._wire_transport()
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(chapter_pane)
-        splitter.addWidget(self._reader)
+        splitter.addWidget(reader_pane)
         splitter.addWidget(self._notes)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -115,6 +141,21 @@ class MainWindow(QMainWindow):
             self._open_path(path, session.sentence_index)
 
     def closeEvent(self, event) -> None:
+        if self._editing and self._editor_is_dirty():
+            choice = QMessageBox.question(
+                self,
+                "Ultidraft",
+                "Save manuscript changes before closing?",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if choice == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if choice == QMessageBox.StandardButton.Save and not self._write_manuscript():
+                event.ignore()
+                return
         self._playing = False
         self._highlight_timer.stop()
         self._engine.stop()
@@ -132,7 +173,11 @@ class MainWindow(QMainWindow):
         quit_action = QAction("Exit", self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
+        save_action = QAction("Save manuscript", self)
+        save_action.setShortcut(QKeySequence.StandardKey.Save)
+        save_action.triggered.connect(self._save_manuscript)
         file_menu.addAction(open_action)
+        file_menu.addAction(save_action)
         file_menu.addAction(export_action)
         file_menu.addSeparator()
         file_menu.addAction(quit_action)
@@ -146,10 +191,15 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about)
 
     def _build_shortcuts(self) -> None:
-        QShortcut(QKeySequence(Qt.Key.Key_Space), self, self._toggle_play)
-        QShortcut(QKeySequence(Qt.Key.Key_Left), self, self._previous_sentence)
-        QShortcut(QKeySequence(Qt.Key.Key_Right), self, self._next_sentence)
-        QShortcut(QKeySequence(Qt.Key.Key_N), self, self._add_note)
+        self._listen_shortcuts = [
+            QShortcut(QKeySequence(Qt.Key.Key_Space), self, self._toggle_play),
+            QShortcut(QKeySequence(Qt.Key.Key_Left), self, self._previous_sentence),
+            QShortcut(QKeySequence(Qt.Key.Key_Right), self, self._next_sentence),
+            QShortcut(QKeySequence(Qt.Key.Key_N), self, self._add_note),
+        ]
+        self._edit_shortcut = QShortcut(QKeySequence(Qt.Key.Key_E), self)
+        self._edit_shortcut.activated.connect(self._enter_edit_mode)
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self._leave_edit_mode)
 
     def _wire_transport(self) -> None:
         self._transport.play_pause.connect(self._toggle_play)
@@ -158,6 +208,7 @@ class MainWindow(QMainWindow):
         self._transport.previous_paragraph.connect(self._previous_paragraph)
         self._transport.next_paragraph.connect(self._next_paragraph)
         self._transport.add_note.connect(self._add_note)
+        self._transport.edit_toggled.connect(self._toggle_edit_mode)
         self._transport.export_notes.connect(self._export_notes)
         self._transport.speed_changed.connect(self._on_speed)
         self._transport.voice_changed.connect(self._on_voice_picked)
@@ -173,6 +224,20 @@ class MainWindow(QMainWindow):
             self._open_path(Path(path), 0)
 
     def _open_path(self, path: Path, sentence_index: int = 0) -> None:
+        if self._editing and self._editor_is_dirty():
+            choice = QMessageBox.question(
+                self,
+                "Ultidraft",
+                "Save manuscript changes before opening another file?",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if choice == QMessageBox.StandardButton.Cancel:
+                return
+            if choice == QMessageBox.StandardButton.Save and not self._write_manuscript():
+                return
+        self._set_editing(False)
         self._playing = False
         self._highlight_timer.stop()
         self._engine.stop()
@@ -211,8 +276,12 @@ class MainWindow(QMainWindow):
 
     def _on_chapter_clicked(self, item: QListWidgetItem) -> None:
         start = item.data(Qt.ItemDataRole.UserRole)
-        if start is not None:
-            self._jump_to(int(start))
+        if start is None:
+            return
+        if self._editing:
+            self._place_editor_at(int(start))
+            return
+        self._jump_to(int(start))
 
     def _current_sentence_text(self) -> str:
         if self._manuscript is None:
@@ -241,6 +310,8 @@ class MainWindow(QMainWindow):
                 return
 
     def _jump_to(self, index: int) -> None:
+        if self._editing:
+            return
         was_playing = self._playing
         self._engine.stop()
         self._show_index(index)
@@ -248,7 +319,7 @@ class MainWindow(QMainWindow):
             self._speak_current()
 
     def _toggle_play(self) -> None:
-        if self._manuscript is None:
+        if self._manuscript is None or self._editing:
             return
         if self._playing:
             self._playing = False
@@ -336,6 +407,112 @@ class MainWindow(QMainWindow):
         if self._manuscript is None:
             return
         self._jump_to(self._manuscript.next_paragraph_index(self._index))
+
+    def _toggle_edit_mode(self) -> None:
+        if self._editing:
+            self._leave_edit_mode()
+        else:
+            self._enter_edit_mode()
+
+    def _enter_edit_mode(self) -> None:
+        if self._manuscript is None or self._editing:
+            return
+        self._resume_after_edit = self._playing
+        self._playing = False
+        self._highlight_timer.stop()
+        self._engine.pause()
+        self._transport.set_playing(False)
+        self._editor.setPlainText(self._manuscript.raw)
+        self._set_editing(True)
+        self._place_editor_at(self._index)
+        self._editor.setFocus()
+        self.statusBar().showMessage(
+            f"Editing {self._manuscript.path.name} at this sentence. Click Listen when done."
+        )
+
+    def _leave_edit_mode(self) -> None:
+        if not self._editing or self._manuscript is None:
+            return
+        cursor = self._editor.textCursor().position()
+        if self._editor_is_dirty() and not self._write_manuscript():
+            return
+        path = self._manuscript.path
+        try:
+            manuscript = load_manuscript(path)
+        except OSError as exc:
+            QMessageBox.warning(self, "Ultidraft", f"Could not reload the manuscript:\n{exc}")
+            return
+        if not manuscript.sentences:
+            QMessageBox.warning(self, "Ultidraft", "That edit left the file with no readable text.")
+            return
+        index = sentence_index_at_offset(manuscript.raw, manuscript.sentences, cursor)
+        sidecar = load_sidecar(path, manuscript.hash)
+        sidecar.manuscript_hash = manuscript.hash
+        self._manuscript = manuscript
+        self._sidecar = sidecar
+        self._reader.set_manuscript(manuscript)
+        self._fill_chapters()
+        self._notes.set_notes(sidecar.notes)
+        self._set_editing(False)
+        self._show_index(index)
+        self.statusBar().showMessage(
+            f"{path.name}  ·  {len(manuscript.chapters)} chapters  ·  {len(manuscript.sentences)} sentences"
+        )
+        if self._resume_after_edit:
+            self._resume_after_edit = False
+            self._playing = True
+            self._transport.set_playing(True)
+            self._speak_current()
+
+    def _save_manuscript(self) -> None:
+        if not self._editing:
+            self.statusBar().showMessage("Nothing to save — switch to Edit to change the manuscript.")
+            return
+        if self._write_manuscript():
+            self.statusBar().showMessage("Saved manuscript.")
+
+    def _write_manuscript(self) -> bool:
+        if self._manuscript is None:
+            return False
+        text = self._editor.toPlainText()
+        try:
+            self._manuscript.path.write_text(text, encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Ultidraft", f"Could not save the manuscript:\n{exc}")
+            return False
+        return True
+
+    def _editor_is_dirty(self) -> bool:
+        if self._manuscript is None:
+            return False
+        return self._editor.toPlainText() != self._manuscript.raw
+
+    def _set_editing(self, editing: bool) -> None:
+        self._editing = editing
+        self._banner.setVisible(editing)
+        self._page.setCurrentWidget(self._editor if editing else self._reader)
+        self._transport.set_editing(editing)
+        for shortcut in self._listen_shortcuts:
+            shortcut.setEnabled(not editing)
+        self._edit_shortcut.setEnabled(not editing)
+
+    def _place_editor_at(self, index: int) -> None:
+        if self._manuscript is None:
+            return
+        sentence = self._manuscript.sentence_at(index)
+        raw = self._editor.toPlainText()
+        span = None
+        if sentence is not None:
+            span = locate_in_markdown(raw, sentence.text)
+        cursor = self._editor.textCursor()
+        if span is None:
+            cursor.setPosition(0)
+        else:
+            cursor.setPosition(span[0])
+            cursor.setPosition(span[1], QTextCursor.MoveMode.KeepAnchor)
+        self._editor.setTextCursor(cursor)
+        self._editor.ensureCursorVisible()
+        self._index = index
 
     def _spoken_text(self, text: str) -> str:
         rules = self._sidecar.lexicon if self._sidecar is not None else []
@@ -437,35 +614,79 @@ class MainWindow(QMainWindow):
         )
 
     def _add_note(self) -> None:
-        if self._manuscript is None or self._sidecar is None:
+        if self._manuscript is None or self._sidecar is None or self._editing:
             return
-        self._playing = False
-        self._highlight_timer.stop()
-        self._engine.pause()
-        self._transport.set_playing(False)
         sentence = self._manuscript.sentence_at(self._index)
         if sentence is None:
             return
+        self._pause_for_note()
         dialog = NoteDialog(self._manuscript.nearby(self._index), self._index, self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         body = dialog.note_text()
         if not body:
             return
-        target = self._manuscript.sentence_at(dialog.selected_index()) or sentence
+        note = self._note_from_dialog(dialog, note_id=self._sidecar.next_note_id())
+        self._sidecar.add_note(note)
+        self._persist_notes(f"Saved {note.id} and updated listening-notes.md")
+
+    def _edit_note(self, note_id: str) -> None:
+        if self._manuscript is None or self._sidecar is None or self._editing:
+            return
+        existing = self._sidecar.note_by_id(note_id)
+        if existing is None:
+            return
+        self._pause_for_note()
+        self._show_index(existing.sentence_index)
+        dialog = NoteDialog(
+            self._manuscript.nearby(existing.sentence_index),
+            existing.sentence_index,
+            self,
+            title=f"Edit {existing.id}",
+            initial_text=existing.body,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        body = dialog.note_text()
+        if not body:
+            return
+        updated = self._note_from_dialog(dialog, note_id=existing.id, created=existing.created)
+        self._sidecar.replace_note(updated)
+        self._persist_notes(f"Updated {updated.id} and refreshed listening-notes.md")
+
+    def _pause_for_note(self) -> None:
+        self._playing = False
+        self._highlight_timer.stop()
+        self._engine.pause()
+        self._transport.set_playing(False)
+
+    def _note_from_dialog(
+        self,
+        dialog: NoteDialog,
+        *,
+        note_id: str,
+        created: str | None = None,
+    ) -> Note:
+        assert self._manuscript is not None
+        fallback = self._manuscript.sentence_at(self._index)
+        target = self._manuscript.sentence_at(dialog.selected_index()) or fallback
+        assert target is not None
         before = self._manuscript.sentence_at(target.index - 1)
         after = self._manuscript.sentence_at(target.index + 1)
-        note = Note(
-            id=self._sidecar.next_note_id(),
-            created=utc_now_iso(),
+        return Note(
+            id=note_id,
+            created=created or utc_now_iso(),
             chapter_title=target.chapter_title,
             anchor_quote=target.text,
             context_before=before.text if before else "",
             context_after=after.text if after else "",
             sentence_index=target.index,
-            body=body,
+            body=dialog.note_text(),
         )
-        self._sidecar.add_note(note)
+
+    def _persist_notes(self, message: str) -> None:
+        if self._manuscript is None or self._sidecar is None:
+            return
         self._notes.set_notes(self._sidecar.notes)
         self._flush_state()
         write_notes_markdown(
@@ -473,9 +694,7 @@ class MainWindow(QMainWindow):
             self._sidecar,
             self._manuscript.path.name,
         )
-        self.statusBar().showMessage(
-            f"Saved {note.id} and updated listening-notes.md"
-        )
+        self.statusBar().showMessage(message)
 
     def _export_notes(self) -> None:
         if self._manuscript is None or self._sidecar is None:
@@ -496,8 +715,10 @@ class MainWindow(QMainWindow):
             self,
             "About Ultidraft",
             "Ultidraft listens to a markdown draft,\n"
-            "lets you mark the sentence you just heard,\n"
-            "and exports quote-anchored notes for Cursor.\n\n"
+            "lets you edit the sentence you just heard,\n"
+            "mark notes, and export quote-anchored notes for Cursor.\n\n"
+            "Press E to edit the manuscript at the playhead,\n"
+            "then Listen (Esc) to keep narrating.\n\n"
             "Neural voices use Microsoft Edge TTS (one sentence\n"
             "at a time, no account). This-PC voices stay offline.\n"
             "Spoken notes use Windows speech recognition on this PC.\n"

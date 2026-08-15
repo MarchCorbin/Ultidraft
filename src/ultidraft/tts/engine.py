@@ -9,6 +9,9 @@ Playback rules that keep this reliable:
   finish exactly once and never loops.
 - Each clip gets a fresh QMediaPlayer. Reusing one player meant stale
   buffered/stopped events from the previous clip could strand the next one.
+- The next cached clip is loaded into a standby player while the current clip is
+  speaking. Promotion is immediate, so the media backend does not introduce a
+  load-sized pause between reading spans.
 """
 
 from __future__ import annotations
@@ -70,6 +73,9 @@ class _SynthWorker(QThread):
         self.done.emit(str(self._dest), error)
 
     async def _synthesize(self) -> None:
+        from ultidraft.tts.certs import prepare_edge_ssl
+
+        prepare_edge_ssl()
         import edge_tts
 
         self._dest.parent.mkdir(parents=True, exist_ok=True)
@@ -116,6 +122,9 @@ class SpeechEngine(QObject):
         self._audio = QAudioOutput(self)
         self._player: QMediaPlayer | None = None
         self._clip_path: Path | None = None
+        self._next_key: str | None = None
+        self._prepared_player: QMediaPlayer | None = None
+        self._prepared_path: Path | None = None
 
         self._started_at = 0.0
         self._heard_audio = False
@@ -189,14 +198,23 @@ class SpeechEngine(QObject):
         backend, _engine, voice = parse_voice_id(self._voice_id)
         if backend != "edge":
             return
+        next_key: str | None = None
         for text in texts:
             cleaned = text.strip()
             if not cleaned:
                 continue
             dest = self._cache_path(cleaned, voice)
+            if next_key is None:
+                next_key = str(dest)
             if self._is_playable(dest):
                 continue
             self._enqueue(cleaned, dest)
+        if next_key != self._next_key:
+            self._next_key = next_key
+            if self._prepared_path is not None and str(self._prepared_path) != next_key:
+                self._teardown_prepared()
+            if next_key is not None and self._is_playable(Path(next_key)):
+                self._prepare_next(Path(next_key))
 
     def pause(self) -> None:
         self._paused = True
@@ -240,9 +258,11 @@ class SpeechEngine(QObject):
         self._consecutive_failures = 0
         self._queue.clear()
         self._texts.clear()
+        self._next_key = None
         self._watch.stop()
         self._cancel_workers()
         self._teardown_player()
+        self._teardown_prepared()
         self._tts.stop()
 
     def is_speaking(self) -> bool:
@@ -298,7 +318,14 @@ class SpeechEngine(QObject):
         if token != self._token:
             return
         self._teardown_player()
-        player = QMediaPlayer(self)
+        if self._prepared_player is not None and self._prepared_path == path:
+            player = self._prepared_player
+            self._prepared_player = None
+            self._prepared_path = None
+        else:
+            player = QMediaPlayer(self)
+            player.setSource(QUrl.fromLocalFile(str(path)))
+        self._next_key = None
         player.setAudioOutput(self._audio)
         player.mediaStatusChanged.connect(
             lambda status, tok=token: self._on_media(status, tok)
@@ -310,10 +337,32 @@ class SpeechEngine(QObject):
         self._last_position = -1
         self._started_at = time.monotonic()
         self._last_moved_at = self._started_at
-        player.setSource(QUrl.fromLocalFile(str(path)))
+        if player.mediaStatus() == QMediaPlayer.MediaStatus.InvalidMedia:
+            self._on_error(token)
+            return
         player.play()
         self._arm_watchdog()
         self.state_changed.emit("speaking")
+
+    def _prepare_next(self, path: Path) -> None:
+        """Load the next clip now, while the current one is still playing."""
+        if self._prepared_path == path and self._prepared_player is not None:
+            return
+        self._teardown_prepared()
+        player = QMediaPlayer(self)
+        player.setSource(QUrl.fromLocalFile(str(path)))
+        self._prepared_player = player
+        self._prepared_path = path
+
+    def _teardown_prepared(self) -> None:
+        player = self._prepared_player
+        self._prepared_player = None
+        self._prepared_path = None
+        if player is None:
+            return
+        player.stop()
+        player.setSource(QUrl())
+        player.deleteLater()
 
     def _teardown_player(self) -> None:
         player = self._player
@@ -397,6 +446,8 @@ class SpeechEngine(QObject):
         if waiting_on_this:
             self._awaiting_key = None
             self._start_clip(Path(key), self._token)
+        elif key == self._next_key:
+            self._prepare_next(Path(key))
         self._pump()
 
     # -------------------------------------------------------------- watchdog

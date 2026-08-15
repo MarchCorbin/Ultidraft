@@ -62,6 +62,19 @@ class Sidecar:
     def add_note(self, note: Note) -> None:
         self.notes.append(note)
 
+    def note_by_id(self, note_id: str) -> Note | None:
+        for note in self.notes:
+            if note.id == note_id:
+                return note
+        return None
+
+    def replace_note(self, note: Note) -> bool:
+        for index, existing in enumerate(self.notes):
+            if existing.id == note.id:
+                self.notes[index] = note
+                return True
+        return False
+
     def to_dict(self) -> dict:
         return {
             "version": self.version,

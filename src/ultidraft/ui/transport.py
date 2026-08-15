@@ -14,6 +14,7 @@ class TransportBar(QWidget):
     next_paragraph = Signal()
     add_note = Signal()
     export_notes = Signal()
+    edit_toggled = Signal()
     speed_changed = Signal(float)
     voice_changed = Signal(str)
 
@@ -32,6 +33,8 @@ class TransportBar(QWidget):
         self.next_para.setToolTip("Next paragraph")
         self.note = QPushButton("Add note")
         self.note.setToolTip("Add a note on this sentence (N)")
+        self.edit = QPushButton("Edit")
+        self.edit.setToolTip("Edit the manuscript at this sentence (E)")
         self.export = QPushButton("Export notes")
         self.export.setToolTip("Export listening-notes.md (Ctrl+E)")
         self._speed = QSlider(Qt.Orientation.Horizontal)
@@ -51,6 +54,7 @@ class TransportBar(QWidget):
         self.nxt.clicked.connect(self.next_sentence)
         self.next_para.clicked.connect(self.next_paragraph)
         self.note.clicked.connect(self.add_note)
+        self.edit.clicked.connect(self.edit_toggled)
         self.export.clicked.connect(self.export_notes)
         self._speed.valueChanged.connect(self._on_speed)
         self._voices.currentIndexChanged.connect(self._on_voice)
@@ -65,6 +69,7 @@ class TransportBar(QWidget):
             self.nxt,
             self.next_para,
             self.note,
+            self.edit,
             self.export,
         ):
             row.addWidget(widget)
@@ -78,6 +83,14 @@ class TransportBar(QWidget):
     def set_playing(self, playing: bool) -> None:
         self._playing = playing
         self.play.setText("Pause" if playing else "Play")
+
+    def set_editing(self, editing: bool) -> None:
+        self.edit.setText("Listen" if editing else "Edit")
+        self.edit.setToolTip(
+            "Return to listening (Esc)" if editing else "Edit the manuscript at this sentence (E)"
+        )
+        for widget in (self.prev_para, self.prev, self.play, self.nxt, self.next_para, self.note):
+            widget.setEnabled(not editing)
 
     def set_speed(self, speed: float) -> None:
         self._speed.blockSignals(True)
