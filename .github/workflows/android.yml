@@ -1,0 +1,78 @@
+name: Android APK
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up the Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Windows checkouts drop the executable bit, and the runner is Linux.
+      - name: Make the wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Run the domain tests
+        run: ./gradlew --no-daemon :app:testDebugUnitTest
+
+      - name: Build the debug APK
+        run: ./gradlew --no-daemon :app:assembleDebug
+
+      - name: Name the APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk ultidraft-debug.apk
+
+      - name: Upload the APK as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ultidraft-debug-apk
+          path: android/ultidraft-debug.apk
+          if-no-files-found: error
+
+      - name: Upload the test report when something fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: android/app/build/reports/tests/
+          if-no-files-found: ignore
+
+      # A release asset is a plain download link, which is the only practical way to
+      # install on a phone: Actions artifacts are zipped and need a signed-in browser.
+      - name: Publish the APK to the android-latest release
+        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: Ultidraft Android (latest build)
+          body: |
+            Debug build of the Ultidraft Android client from ${{ github.sha }}.
+
+            Download `ultidraft-debug.apk` on your phone and open it to install.
+            Android will ask you to allow installs from your browser the first time.
+          files: android/ultidraft-debug.apk
+          prerelease: true

@@ -23,7 +23,23 @@ Silent rereading skips clunky rhythm and repeated words. Existing listen-aloud a
 - Speak a note into the microphone (Windows speech recognition; first use turns on Speech in Windows Settings)
 - Per-book pronunciation rules (Voice → Pronunciation rules), e.g. Sk4ms → scams
 
-Android is planned as a second client against the same sidecar schema, not a rewrite of the parser.
+## Android v1
+
+A second client against the same sidecar schema, not a rewrite of the parser. Live in `android/`.
+
+- Reads and writes the same folder over Syncthing — no account, no server
+- Keeps reading with the screen off; play/pause/skip on the lock screen and headphones
+- Typed or spoken notes on the sentence you just heard
+- Edits the paragraph at the playhead
+- Phone notes are numbered `M001`, `M002`, … so they can never collide with the desktop's
+  `N` sequence; sidecar writes re-read and merge rather than overwrite
+
+`android/app/src/main/java/com/ultidraft/domain/` is a Kotlin port of `ultidraft.domain`,
+held to this parser by a differential test: both were run over the same fifteen documents
+and produced identical chapters, sentences, paragraph indices, spans and export markdown.
+Change the sentence splitter on one side and you must change it on the other.
+
+See [`android/README.md`](android/README.md) for the build and the Syncthing setup.
 
 ## Architecture
 
@@ -184,4 +200,8 @@ PyInstaller writes an app folder at `dist/Ultidraft/` (not a single file) so Qt 
 
 ## Later
 
-When the desktop app is a daily driver: a Kotlin Android client that reads the same sidecar over Syncthing or OneDrive, with lock-screen media controls. No server.
+- Neural voices on the phone to match the desktop's Jenny; Android's offline engine is
+  good, not the same.
+- Notes taken on the phone while the PC has the book open still rely on Syncthing's
+  conflict files if both write in the same second. The merge covers the ordinary case.
+- A signed release APK, if this ever leaves my two devices.
